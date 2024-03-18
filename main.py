@@ -1,45 +1,68 @@
+# Import necessary libraries
 import os
-from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Depends
-from telegram import Update, Bot
-from pydantic import BaseModel
+import time
+import telebot
+from telebot import types
 
-class TelegramUpdate(BaseModel):
-    update_id: int
-    message: dict
+# Load bot token from bot_token.txt
+with open("bot_token.txt", "r") as token_file:
+    BOT_TOKEN = token_file.read().strip()
 
-app = FastAPI()
+# Initialize the bot
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# Load variables from .env file if present
-load_dotenv()
+# Define a dictionary to store user messages and their corresponding photos
+user_messages = {}
 
-# Read the variable from the environment (or .env file)
-bot_token = os.getenv('BOT_TOKEN')
-secret_token = os.getenv("SECRET_TOKEN")
-# webhook_url = os.getenv('CYCLIC_URL', 'http://localhost:8181') + "/webhook/"
+# Handle incoming photos, videos, and gifs
+@bot.message_handler(content_types=["photo", "video", "document"])
+def handle_media(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
 
-bot = Bot(token=bot_token)
-# bot.set_webhook(url=webhook_url)
-# webhook_info = bot.get_webhook_info()
-# print(webhook_info)
+    # Store the message and its media in the dictionary
+    user_messages[user_id] = message
 
-def auth_telegram_token(x_telegram_bot_api_secret_token: str = Header(None)) -> str:
-    # return true # uncomment to disable authentication
-    if x_telegram_bot_api_secret_token != secret_token:
-        raise HTTPException(status_code=403, detail="Not authenticated")
-    return x_telegram_bot_api_secret_token
+    # Ask the user if they want to add text to the media
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton("Yes"), types.KeyboardButton("No"))
+    bot.send_message(chat_id, "Do you want to add text to this media?", reply_markup=markup)
 
-@app.post("/webhook/")
-async def handle_webhook(update: TelegramUpdate, token: str = Depends(auth_telegram_token)):
-    chat_id = update.message["chat"]["id"]
-    text = update.message["text"]
-    # print("Received message:", update.message)
+# Handle user response for adding text
+@bot.message_handler(func=lambda message: message.text in ["Yes", "No"])
+def handle_text_response(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
 
-    if text == "/start":
-        with open('hello.gif', 'rb') as photo:
-            await bot.send_photo(chat_id=chat_id, photo=photo)
-        await bot.send_message(chat_id=chat_id, text="Welcome to Cyclic Starter Python Telegram Bot!")
-    else:
-        await bot.send_message(chat_id=chat_id, reply_to_message_id=update.message["message_id"], text="Yo!")
+    if user_id in user_messages:
+        if message.text == "Yes":
+            bot.send_message(chat_id, "Please type the text you want to add:")
+        else:
+            bot.send_message(chat_id, "Okay, I will publish the media without any additional text.")
+            publish_media(user_id)
 
-    return {"ok": True}
+# Handle user response with text
+@bot.message_handler(func=lambda message: user_id in user_messages and message.text)
+def handle_text(message):
+    user_id = message.from_user.id
+    user_messages[user_id].caption = message.text
+    bot.send_message(user_id, "I will publish the media with the added text in 1 minute.")
+    publish_media(user_id)
+
+# Publish media after 1 minute delay
+def publish_media(user_id):
+    chat_id = user_messages[user_id].chat.id
+    media = user_messages[user_id].media
+    bot.send_chat_action(chat_id, "upload_photo")
+    time.sleep(60)  # 1 minute delay
+    bot.send_media_group(chat_id, [media])
+    bot.send_message(user_id, "Now she belongs to everyone in this group ;)")
+
+# Ignore messages from specified chat_id
+@bot.message_handler(func=lambda message: message.chat.id != 1001780824924)
+def ignore_messages(message):
+    pass
+
+# Start the bot
+if __name__ == "__main__":
+    bot.polling(none_stop=True)
